@@ -17,13 +17,13 @@
  * 0x18:  Upper memory bound
 */
 struct memory_region {
-    uint8_t  unk0[4];
+    uint8_t unk0[4];
     uint32_t buf_addr;
     uint32_t buf_size;
-    uint8_t  unk1[8];
+    uint8_t unk1[8];
     uint32_t lower_mem_bound;
     uint32_t upper_mem_bound;
-    uint8_t  unk2[4];
+    uint8_t unk2[4];
 };
 
 HMODULE getModule(HANDLE proc, char *name) {
@@ -32,9 +32,9 @@ HMODULE getModule(HANDLE proc, char *name) {
     char modName[100];
 
     if (EnumProcessModules(proc, mods, sizeof(mods), &cbNeeded)) {
-        for(int x = 0; x < (cbNeeded/sizeof(HMODULE)); x++) {
+        for (int x = 0; x < (cbNeeded / sizeof(HMODULE)); x++) {
             GetModuleBaseNameA(proc, mods[x], modName, sizeof(modName));
-            if(strcmp(name, modName) == 0) {
+            if (strcmp(name, modName) == 0) {
                 return mods[x];
             }
         }
@@ -52,7 +52,7 @@ int main(int argc, char **argv) {
     // Check what we want to dump
     bool dump_rom = false;
     bool dump_ram = false;
-    for(char *c = argv[1]; *c != '\0'; c++) {
+    for (char *c = argv[1]; *c != '\0'; c++) {
         if (*c == 'o') dump_rom = true;
         if (*c == 'a') dump_ram = true;
         if (*c == 'b') dump_rom = true, dump_ram = true;
@@ -63,8 +63,8 @@ int main(int argc, char **argv) {
     sscanf(argv[2], "%" SCNd32, &pid);
 
     HANDLE proc = OpenProcess(
-        PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
-        false, pid
+            PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
+            false, pid
     );
 
     if (proc == NULL) {
@@ -78,66 +78,91 @@ int main(int argc, char **argv) {
         printf("Failed to get handle for SimU8.dll\n");
         return -1;
     }
-    
+
     MODULEINFO modinfo;
-    if(GetModuleInformation(proc, SimU8_mod, &modinfo, sizeof(modinfo)) == 0) {
+    if (GetModuleInformation(proc, SimU8_mod, &modinfo, sizeof(modinfo)) == 0) {
         printf("Failed to get module info for SimU8.dll\n");
         return -1;
     }
-    uint32_t SimU8_base_addr = (uint32_t)modinfo.lpBaseOfDll;
+    uint32_t SimU8_base_addr = (uint32_t) modinfo.lpBaseOfDll;
 
-
-    uint32_t sim_state_addr = SimU8_base_addr + 0x282C0;  // For version 1.11.100.0: Use SimU8_2005.ct
-//    uint32_t sim_state_addr = SimU8_base_addr + 0x392AC;  // For version 1.15.200.0: Use SimU8_2009.ct
-//    uint32_t sim_state_addr = SimU8_base_addr + 0x16CE20;  // For version 2.0.100.0: Use user202729's cheat tables fx-570EX_991EX Emulator.CT
-//    uint32_t sim_state_addr = SimU8_base_addr + 0x16BE28;  // For version 2.10.1.0: Use fx-92_College_Emulator_Ver_USB.CT
-
+    // For version 1.11.100.0: 0x282C0
+    // For version 1.15.200.0: 0x392AC
+    // For version 2.0.100.0: 0x16CE20
+    // For version 2.10.1.0: 0x16BE28
+    int SimU8_ver_count = 4;
+    uint32_t SimU8_state_offsets[4] = {0x282C0, 0x392AC, 0x16CE20, 0x16BE28};
     uint8_t buffer[0xFF];
-    if(ReadProcessMemory(proc, (LPCVOID)sim_state_addr, buffer, 0xFF, NULL) == 0) {
-        printf("Failed to read memory: 0x%x\n", GetLastError());
-        return -1;
-    }
+    uint32_t rom_size;
+    struct memory_region *rom_seg0;
+    struct memory_region *rom_seg1;
+    uint8_t *rom_buf;
+    struct memory_region *ram;
+    uint8_t *ram_buf;
 
-    // ROM Segment 0 +0x2C
-    // ROM Segment 1 +0x64
-    // RAM           +0x48
-    struct memory_region *rom_seg0 = (struct memory_region *)(buffer + 0x2C);
-    struct memory_region *rom_seg1 = (struct memory_region *)(buffer + 0x64);
-    struct memory_region *ram = (struct memory_region *)(buffer + 0x48);
+    for (int i = 0; i < SimU8_ver_count; ++i) {
+        if (ReadProcessMemory(proc, (LPCVOID) (SimU8_base_addr + SimU8_state_offsets[i]), buffer, 0xFF, NULL) == 0) {
+            if (i < SimU8_ver_count - 1) {
+                continue;
+            }
+            printf("Failed to read memory: 0x%x\n", GetLastError());
+            return -1;
+        }
+
+        // ROM Segment 0 +0x2C
+        // ROM Segment 1 +0x64
+        // RAM           +0x48
+        rom_seg0 = (struct memory_region *) (buffer + 0x2C);
+        rom_seg1 = (struct memory_region *) (buffer + 0x64);
+        ram = (struct memory_region *) (buffer + 0x48);
+
+        // Allocate space for the ROM
+        rom_size = rom_seg0->buf_size + rom_seg1->buf_size;
+        rom_buf = malloc(sizeof(uint8_t) * rom_size);
+
+        // ROM Segment 0
+        if (ReadProcessMemory(proc, (LPCVOID) rom_seg0->buf_addr, rom_buf, rom_seg0->buf_size, NULL) == 0) {
+            if (i < SimU8_ver_count - 1) {
+                continue;
+            }
+            printf("Failed to read ROM Seg 0 @ %lx: 0x%x\n", rom_seg0->buf_addr, GetLastError());
+            return -1;
+        }
+
+        // ROM Segment 1
+        if (ReadProcessMemory(proc, (LPCVOID) rom_seg1->buf_addr, rom_buf + rom_seg0->buf_size, rom_seg1->buf_size,
+                              NULL) == 0) {
+            if (i < SimU8_ver_count - 1) {
+                continue;
+            }
+            printf("Failed to read ROM Seg 1 @ %lx: 0x%x\n", rom_seg1->buf_addr, GetLastError());
+            return -1;
+        }
+
+        // RAM
+        ram_buf = malloc(sizeof(uint8_t) * ram->buf_size);
+        if (ReadProcessMemory(proc, (LPCVOID) ram->buf_addr, ram_buf, ram->buf_size, NULL) == 0) {
+            if (i < SimU8_ver_count - 1) {
+                continue;
+            }
+            printf("Failed to read RAM @ %lx: 0x%x\n", ram->buf_addr, GetLastError());
+            return -1;
+        }
+        break;
+    }
 
     printf("           Start       End         Size      \n");
-    printf("ROM Seg 0: 0x%08lx  0x%08lx  0x%08lx\n", rom_seg0->buf_addr, rom_seg0->buf_addr + rom_seg0->buf_size, rom_seg0->buf_size);
-    printf("ROM Seg N: 0x%08lx  0x%08lx  0x%08lx\n", rom_seg1->buf_addr, rom_seg1->buf_addr + rom_seg1->buf_size, rom_seg1->buf_size);
+    printf("ROM Seg 0: 0x%08lx  0x%08lx  0x%08lx\n", rom_seg0->buf_addr, rom_seg0->buf_addr + rom_seg0->buf_size,
+           rom_seg0->buf_size);
+    printf("ROM Seg N: 0x%08lx  0x%08lx  0x%08lx\n", rom_seg1->buf_addr, rom_seg1->buf_addr + rom_seg1->buf_size,
+           rom_seg1->buf_size);
     printf("RAM:       0x%08lx  0x%08lx  0x%08lx\n", ram->buf_addr, ram->buf_addr + ram->buf_size, ram->buf_size);
-
-    // Allocate space for the ROM
-    uint32_t rom_size = rom_seg0->buf_size + rom_seg1->buf_size;
-    uint8_t *rom_buf = malloc(sizeof(uint8_t) * rom_size);
-    
-    // ROM Segment 0
-    if(ReadProcessMemory(proc, (LPCVOID)rom_seg0->buf_addr, rom_buf, rom_seg0->buf_size, NULL) == 0) {
-        printf("Failed to read ROM Seg 0 @ %lx: 0x%x\n", rom_seg0->buf_addr, GetLastError());
-        return -1;
-    }
-
-    // ROM Segment 1
-    if(ReadProcessMemory(proc, (LPCVOID)rom_seg1->buf_addr, rom_buf + rom_seg0->buf_size, rom_seg1->buf_size, NULL) == 0) {
-        printf("Failed to read ROM Seg 1 @ %lx: 0x%x\n", rom_seg1->buf_addr, GetLastError());
-        return -1;
-    }
-
-    // RAM
-    uint8_t *ram_buf = malloc(sizeof(uint8_t) * ram->buf_size);
-    if(ReadProcessMemory(proc, (LPCVOID)ram->buf_addr, ram_buf, ram->buf_size, NULL) == 0) {
-        printf("Failed to read RAM @ %lx: 0x%x\n", ram->buf_addr, GetLastError());
-        return -1;
-    }
 
     // Try and detect ROM name
     char rom_name[8] = "dump";
     int mIdx = rom_size - 1;
     // Find 0x20 after name, then extract it
-    while(rom_buf[mIdx] != 0x20) mIdx--;
+    while (rom_buf[mIdx] != 0x20) mIdx--;
     bool all_ascii = true;
     for (int i = 0; i < 7; ++i) {
         if (rom_buf[mIdx - i] < 32 || rom_buf[mIdx - i] > 126) {
@@ -153,7 +178,7 @@ int main(int argc, char **argv) {
         printf("Found ROM name: %s\n", rom_name);
     } else {
         mIdx = rom_size - 1;
-        while(rom_buf[mIdx] == 0x0) mIdx--;
+        while (rom_buf[mIdx] == 0x0) mIdx--;
     }
     // Truncate the ROM
     uint32_t new_size = (mIdx + 0xFFFF) & ~0xFFFF;
@@ -174,7 +199,7 @@ int main(int argc, char **argv) {
         fclose(f);
         printf("Wrote ROM dump to file\n");
     }
-    
+
     // Write ram dump to file
     if (dump_ram) {
         FILE *f = fopen(ram_filename, "wb");
@@ -182,7 +207,6 @@ int main(int argc, char **argv) {
         fclose(f);
         printf("Wrote RAM dump to file\n");
     }
-    
 
     printf("Done!\n");
 
