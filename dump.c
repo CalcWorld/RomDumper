@@ -26,9 +26,6 @@ struct memory_region {
     uint8_t  unk2[4];
 };
 
-static const uint8_t pattern_csimu8[] = {0x57, 0x44, 0x54, 0x49, 0x4E, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-static const uint8_t pattern_romname[] = {0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F};
-
 HMODULE getModule(HANDLE proc, char *name) {
     HMODULE mods[100];
     uint32_t cbNeeded;
@@ -48,7 +45,7 @@ HMODULE getModule(HANDLE proc, char *name) {
 
 int main(int argc, char **argv) {
     if (argc != 3) {
-        printf("Usage: %s <target> <Emulator PID>", argv[0]);
+        printf("Usage: %s <target(o:rom|a:ram|b:both)> <Emulator PID>", argv[0]);
         return -1;
     }
 
@@ -58,6 +55,7 @@ int main(int argc, char **argv) {
     for(char *c = argv[1]; *c != '\0'; c++) {
         if (*c == 'o') dump_rom = true;
         if (*c == 'a') dump_ram = true;
+        if (*c == 'b') dump_rom = true, dump_ram = true;
     }
 
     // Get handle on the emulator
@@ -88,7 +86,11 @@ int main(int argc, char **argv) {
     }
     uint32_t SimU8_base_addr = (uint32_t)modinfo.lpBaseOfDll;
 
-    uint32_t sim_state_addr = SimU8_base_addr + 0x16CE20;
+
+    uint32_t sim_state_addr = SimU8_base_addr + 0x282C0;  // For version 1.11.100.0: Use SimU8_2005.ct
+//    uint32_t sim_state_addr = SimU8_base_addr + 0x392AC;  // For version 1.15.200.0: Use SimU8_2009.ct
+//    uint32_t sim_state_addr = SimU8_base_addr + 0x16CE20;  // For version 2.0.100.0: Use user202729's cheat tables fx-570EX_991EX Emulator.CT
+//    uint32_t sim_state_addr = SimU8_base_addr + 0x16BE28;  // For version 2.10.1.0: Use fx-92_College_Emulator_Ver_USB.CT
 
     uint8_t buffer[0xFF];
     if(ReadProcessMemory(proc, (LPCVOID)sim_state_addr, buffer, 0xFF, NULL) == 0) {
@@ -133,33 +135,30 @@ int main(int argc, char **argv) {
 
     // Try and detect ROM name
     char rom_name[8] = "dump";
-    int pIdx = 0, mIdx = 0;
-    while(mIdx < rom_size) {
-        if (rom_buf[mIdx] == pattern_romname[pIdx]) {
-            pIdx++;
-        } else if (rom_buf[mIdx] == pattern_romname[0]) {
-            pIdx = 1;
-        } else {
-            pIdx = 0;
-        }
-        mIdx++;
-
-        // Check if we're at the end of the pattern
-        if (pIdx == (sizeof(pattern_romname)/sizeof(uint8_t))) {
-            // Find 0x20 after name, then extract it
-            while(rom_buf[mIdx] != 0x20) mIdx++;
-            mIdx -= 7;
-            memcpy(rom_name, rom_buf + mIdx, 7);
-            rom_name[7] = 0;
-
-            printf("Found ROM name: %s\n", rom_name);
-
-            // Truncate the ROM as the name is found at the end
-            uint32_t new_size = (mIdx + 0xFFFF) & ~0xFFFF;
-            printf("Truncated ROM to 0x%08lx from 0x%08lx\n", new_size, rom_size);
-            rom_size = new_size;
+    int mIdx = rom_size - 1;
+    // Find 0x20 after name, then extract it
+    while(rom_buf[mIdx] != 0x20) mIdx--;
+    bool all_ascii = true;
+    for (int i = 0; i < 7; ++i) {
+        if (rom_buf[mIdx - i] < 32 || rom_buf[mIdx - i] > 126) {
+            all_ascii = false;
+            break;
         }
     }
+    if (all_ascii) {
+        mIdx -= 7;
+        memcpy(rom_name, rom_buf + mIdx, 7);
+        rom_name[7] = 0;
+
+        printf("Found ROM name: %s\n", rom_name);
+    } else {
+        mIdx = rom_size - 1;
+        while(rom_buf[mIdx] == 0x0) mIdx--;
+    }
+    // Truncate the ROM
+    uint32_t new_size = (mIdx + 0xFFFF) & ~0xFFFF;
+    printf("Truncated ROM to 0x%08lx from 0x%08lx\n", new_size, rom_size);
+    rom_size = new_size;
 
     // Generate filenames
     char rom_filename[16];
